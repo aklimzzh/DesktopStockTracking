@@ -20,6 +20,8 @@ public sealed record StockQuote(
     public decimal CirculatingShares { get; init; }
     public string Industry { get; init; } = "";
     public IReadOnlyList<string> Concepts { get; init; } = [];
+    // 在类中增加一个只读属性，方便 UI 层判断
+    public string Currency => Code.ToLowerInvariant().StartsWith("hk") ? "HKD" : "CNY";
 
     public decimal? TurnoverRate =>
         CirculatingShares > 0 ? Volume / CirculatingShares * 100 : null;
@@ -42,14 +44,22 @@ public sealed record StockQuote(
     }
 
     private bool TryGetLimitRate(out decimal rate)
+{
+    var code = Code.ToLowerInvariant();
+
+    // 【新增】港股无涨跌停限制，直接返回 false
+    if (code.StartsWith("hk"))
     {
-        var code = Code.ToLowerInvariant();
-        if (code.StartsWith("bj")) { rate = 0.30m; return true; }
-        if (code.StartsWith("sh688") || code.StartsWith("sz300") || code.StartsWith("sz301")) { rate = 0.20m; return true; }
-        if (code.StartsWith("sh60") || code.StartsWith("sz00")) { rate = 0.10m; return true; }
         rate = 0;
         return false;
     }
+
+    if (code.StartsWith("bj")) { rate = 0.30m; return true; }
+    if (code.StartsWith("sh688") || code.StartsWith("sz300") || code.StartsWith("sz301")) { rate = 0.20m; return true; }
+    if (code.StartsWith("sh60") || code.StartsWith("sz00")) { rate = 0.10m; return true; }
+    rate = 0;
+    return false;
+}
 }
 
 
