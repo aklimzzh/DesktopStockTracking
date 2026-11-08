@@ -51,7 +51,7 @@ public sealed partial class SinaQuoteService : IDisposable
         {
             var code = match.Groups["code"].Value.ToLowerInvariant();
             var fields = match.Groups["data"].Value.Split(',');
-            var quote = Parse(code, fields);  // ← 此处内部已分流 hk/sh/sz/bj
+            var quote = Parse(code, fields);
             if (quote is not null)
                 result[code] = quote;
         }
@@ -70,7 +70,7 @@ public sealed partial class SinaQuoteService : IDisposable
                     _circulatingShares[code] = circulatingSharesInTenThousands * 10000;
                 _industries[code] = fields.Length > 34 ? fields[34].Trim() : "";
                 _concepts[code] = fields.Length > 40
-                    ? fields[40].Split('|',StringSplitOptions.RemoveEmptyEntries|StringSplitOptions.TrimEntries).Distinct(StringComparer.OrdinalIgnoreCase).ToArray()
+                    ? fields[40].Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Distinct(StringComparer.OrdinalIgnoreCase).ToArray()
                     : [];
             }
         }
@@ -82,8 +82,8 @@ public sealed partial class SinaQuoteService : IDisposable
                 quote = quote with { CirculatingShares = circulatingShares };
             if (_industries.TryGetValue(code, out var industry))
                 quote = quote with { Industry = industry };
-            if (_concepts.TryGetValue(code,out var concepts))
-                quote=quote with{Concepts=concepts};
+            if (_concepts.TryGetValue(code, out var concepts))
+                quote = quote with { Concepts = concepts };
             result[code] = quote;
         }
 
@@ -93,9 +93,7 @@ public sealed partial class SinaQuoteService : IDisposable
     private static bool IsMarketIndex(string code) =>
         code.StartsWith("sh000", StringComparison.OrdinalIgnoreCase) ||
         code.StartsWith("sz399", StringComparison.OrdinalIgnoreCase) ||
-        code.StartsWith("bj899", StringComparison.OrdinalIgnoreCase) ||
-        // 【新增】港股指数（如恒生指数 hk00001）也跳过 extended info 请求
-        code.StartsWith("hk000", StringComparison.OrdinalIgnoreCase);
+        code.StartsWith("bj899", StringComparison.OrdinalIgnoreCase);
 
     private static StockQuote? Parse(string code, string[] fields)
     {
@@ -152,41 +150,40 @@ public sealed partial class SinaQuoteService : IDisposable
             isPreMarketFallback);
     }
 
-    // 【新增】港股字段解析
+    // 【新增】港股字段解析（经 curl 实测确认字段映射）
     private static StockQuote? ParseHk(string code, string[] fields)
     {
-        // ⚠️ 港股字段顺序与 A 股不同，以下为社区常见映射，
-        //   动手前请务必用 curl 核实真实报文！
-        //
-        //   常见映射（可能因接口版本变化）：
-        //   fields[0] = 英文名
-        //   fields[1] = 中文名
-        //   fields[2] = 今开
-        //   fields[3] = 昨收
-        //   fields[4] = 最高
-        //   fields[5] = 最低
-        //   fields[6] = 现价
-        //   fields[7] = 波动值
-        //   fields[8] = 波动率(%)
-        //   fields[9] = 买一价
-        //   fields[10] = 买一量
-        //   fields[11] = 卖一价
-        //   fields[12] = 卖一量
-        //   fields[13] = 成交金额(万港元)
-        //   fields[14] = 成交量(万股)
-        //   ...
+        // 实测报文字段映射（curl "http://hq.sinajs.cn/list=hk00700,hk00005" 验证）：
+        // fields[0]  = 英文名
+        // fields[1]  = 中文名
+        // fields[2]  = 今开
+        // fields[3]  = 昨收
+        // fields[4]  = 最高
+        // fields[5]  = 最低
+        // fields[6]  = 现价
+        // fields[7]  = 涨跌额
+        // fields[8]  = 涨跌幅(%)
+        // fields[9]  = 买一价
+        // fields[10] = 卖一价
+        // fields[11] = 成交金额(HKD)
+        // fields[12] = 成交量(股)
+        // fields[13] = (港股无此字段，返回0.000)
+        // fields[14] = (港股无此字段，返回0.000)
+        // fields[15] = (未知，暂不映射)
+        // fields[16] = (未知，暂不映射)
+        // fields[17] = 日期 (yyyy/MM/dd)
+        // fields[18] = 时间 (HH:mm)
 
         if (fields.Length < 7 || string.IsNullOrWhiteSpace(fields[1]))
             return null;
 
-        var name = fields[1].Trim();            // 中文名
-        var prevClose = Decimal(fields, 3);     // 昨收
-        var current = Decimal(fields, 6);       // 现价
-        var open = Decimal(fields, 2);          // 今开
-        var high = Decimal(fields, 4);          // 最高
-        var low = Decimal(fields, 5);           // 最低
+        var name = fields[1].Trim();                  // 中文名
+        var prevClose = Decimal(fields, 3);           // 昨收
+        var current = Decimal(fields, 6);             // 现价
+        var open = Decimal(fields, 2);                // 今开
+        var high = Decimal(fields, 4);                // 最高
+        var low = Decimal(fields, 5);                 // 最低
 
-        // 港股无涨跌停，盘前判断逻辑可简化
         if (current == 0 && prevClose == 0)
             return null;
 
@@ -194,18 +191,28 @@ public sealed partial class SinaQuoteService : IDisposable
         if (isPreMarketFallback)
             current = prevClose;
 
-        // 港股成交量/金额字段需根据实测调整索引
-        var volume = Long(fields, 14);          // 成交量（万股，需确认）
-        var amount = Decimal(fields, 13);       // 成交金额（万港元，需确认）
+        // 成交量/金额 —— 之前版本索引写错了，现已修正
+        var volume = Long(fields, 12);                // 成交量(股)
+        var amount = Decimal(fields, 11);             // 成交金额(HKD)
 
-        // 买一/卖一价（如有）
-        var bid1Price = Decimal(fields, 9);
-        var bid1Volume = Long(fields, 10);
-        var ask1Price = Decimal(fields, 11);
-        var ask1Volume = Long(fields, 12);
+        // 买一价/卖一价（港股无盘口量数据）
+        var bid1Price = Decimal(fields, 9);           // 买一价
+        var ask1Price = Decimal(fields, 10);          // 卖一价
+        var bid1Volume = 0L;                          // 港股无此数据
+        var ask1Volume = 0L;                          // 港股无此数据
 
-        // 港股时间字段位置可能与 A 股不同，先设为 null，后续根据实测补充
+        // 解析时间 (港股日期格式: yyyy/MM/dd，与A股 yyyy-MM-dd 不同)
         DateTime? quoteTime = null;
+        if (fields.Length > 18 &&
+            DateTime.TryParseExact(
+                $"{fields[17]} {fields[18]}",
+                "yyyy/MM/dd HH:mm",
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.None,
+                out var parsedTime))
+        {
+            quoteTime = parsedTime;
+        }
 
         return new StockQuote(
             code,
@@ -239,13 +246,13 @@ public sealed partial class SinaQuoteService : IDisposable
 
     public void Dispose() => _client.Dispose();
 
-    // 【改动】正则：\d{6} → \d{5,6}，兼容港股 5 位代码
+    // 【改动】\d{6} → \d{5,6}，兼容港股 5 位代码
     [GeneratedRegex(
         @"var\s+hq_str_(?<code>[a-z]{2}\d{5,6})=""(?<data>[^""]*)"";",
         RegexOptions.Compiled | RegexOptions.IgnoreCase)]
     private static partial Regex QuoteLineRegex();
 
-    // 【改动】正则：\d{6} → \d{5,6}，兼容港股 5 位代码
+    // 【改动】\d{6} → \d{5,6}，兼容港股 5 位代码
     [GeneratedRegex(
         @"var\s+hq_str_(?<code>[a-z]{2}\d{5,6})_i=""(?<data>[^""]*)"";",
         RegexOptions.Compiled | RegexOptions.IgnoreCase)]
